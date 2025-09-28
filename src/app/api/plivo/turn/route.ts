@@ -1,8 +1,8 @@
-// app/api/plivo/turn/route.ts
+// @ts-nocheck
 import axios from "axios";
-import { transcribeWithOpenAI, chatReply } from "@/lib/openai";
-import { textToSpeechSaveFile } from "@/lib/tts";
-import prisma from "@/lib/prisma";
+import { transcribeWithOpenAI, chatReply } from "@/src/lib/openai";
+import { textToSpeechSaveFile } from "@/src/lib/tts";
+import prisma from "@/src/lib/prisma";
 
 export async function POST(req: Request) {
   try {
@@ -24,23 +24,23 @@ export async function POST(req: Request) {
       return new Response(fallback, { headers: { "Content-Type": "application/xml" } });
     }
 
-    // 1) Download recording with axios (fixes fetch ENOTFOUND)
+    // 1) Download caller recording
     const r = await axios.get(recordingUrl, { responseType: "arraybuffer" });
     const buffer = Buffer.from(r.data);
     console.log("Downloaded recording size:", buffer.length);
 
-    // 2) Transcribe
+    // 2) Transcribe with OpenAI Whisper
     const transcript = await transcribeWithOpenAI(buffer);
     console.log("Transcript:", transcript);
 
-    // 3) AI reply
+    // 3) Get GPT reply
     const prompt = `You are an assistant on a phone call. Reply courteously and succinctly. Transcript: ${transcript}`;
     const aiReply = await chatReply(prompt);
     console.log("AI Reply:", aiReply);
 
-    // 4) Generate TTS file (saved in /public/tts)
+    // 4) Generate TTS file → stored in /tmp
     const { id: ttsId } = await textToSpeechSaveFile(aiReply);
-    const ttsUrl = `${process.env.PUBLIC_BASE_URL}/tts/${ttsId}.mp3`;
+    const ttsUrl = `${process.env.PUBLIC_BASE_URL}/api/tts?id=${ttsId}`;
     console.log("TTS URL (public):", ttsUrl);
 
     // 5) Save to DB (non-blocking)
@@ -57,10 +57,10 @@ export async function POST(req: Request) {
         },
       });
     } catch (err) {
-      console.error("DB write failed, continuing anyway:", err);
+      console.error("DB write failed, continuing:", err);
     }
 
-    // 6) Respond with Play + Record again
+    // 6) Respond with <Play> + loop
     const xml = `
       <Response>
         <Play>${ttsUrl}</Play>

@@ -1,37 +1,19 @@
-// src/lib/tts.ts
-// @ts-nocheck  <-- add this to silence TS for now
+// @ts-nocheck
 import fs from "fs";
-import path from "path";
-import { v4 as uuidv4 } from "uuid";
 
-// Example using ElevenLabs API
-export async function textToSpeechSaveFile(text: string) {
-  const id = uuidv4();
+// Streams an MP3 from /tmp to the caller
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const id = url.searchParams.get("id");
+  if (!id) return new Response("missing id", { status: 400 });
 
-  // Call ElevenLabs (replace with your client code)
-  const r = await fetch("https://api.elevenlabs.io/v1/text-to-speech/YOUR_VOICE_ID", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "xi-api-key": process.env.ELEVENLABS_API_KEY!,
-    },
-    body: JSON.stringify({
-      text,
-      voice_settings: { stability: 0.5, similarity_boost: 0.7 },
-    }),
-  });
-
-  if (!r.ok) throw new Error(`TTS failed: ${await r.text()}`);
-  const audioBuffer = Buffer.from(await r.arrayBuffer());
-
-  // Save into /public/tts so Next.js can serve it statically
-  const publicDir = path.join(process.cwd(), "public", "tts");
-  if (!fs.existsSync(publicDir)) {
-    fs.mkdirSync(publicDir, { recursive: true });
+  const file = `/tmp/tts-${id}.mp3`;
+  try {
+    const data = await fs.promises.readFile(file);
+    return new Response(data, {
+      headers: { "Content-Type": "audio/mpeg" },
+    });
+  } catch (e) {
+    return new Response("not found", { status: 404 });
   }
-
-  const filePath = path.join(publicDir, `${id}.mp3`);
-  await fs.promises.writeFile(filePath, audioBuffer);
-
-  return { id, path: filePath };
 }
