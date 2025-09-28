@@ -1,8 +1,8 @@
 // @ts-nocheck
 import axios from "axios";
-import { transcribeWithOpenAI, chatReply } from "@/ib/openai";
+import { transcribeWithOpenAI, chatReply } from "@/lib/openai";
 import { textToSpeechSaveFile } from "@/lib/tts";
-import prisma from "@/src/lib/prisma";
+import prisma from "@/lib/prisma";
 
 export async function POST(req: Request) {
   try {
