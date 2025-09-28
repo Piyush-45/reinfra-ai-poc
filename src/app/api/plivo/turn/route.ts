@@ -24,26 +24,25 @@ export async function POST(req: Request) {
       return new Response(fallback, { headers: { "Content-Type": "application/xml" } });
     }
 
-    // 1) Download caller recording
+    // 1) Download recording
     const r = await axios.get(recordingUrl, { responseType: "arraybuffer" });
     const buffer = Buffer.from(r.data);
     console.log("Downloaded recording size:", buffer.length);
 
-    // 2) Transcribe with OpenAI Whisper
+    // 2) Transcribe with OpenAI
     const transcript = await transcribeWithOpenAI(buffer);
     console.log("Transcript:", transcript);
 
-    // 3) Get GPT reply
+    // 3) Get AI reply
     const prompt = `You are an assistant on a phone call. Reply courteously and succinctly. Transcript: ${transcript}`;
     const aiReply = await chatReply(prompt);
     console.log("AI Reply:", aiReply);
 
-    // 4) Generate TTS file → stored in /tmp
-    const { id: ttsId } = await textToSpeechSaveFile(aiReply);
-    const ttsUrl = `${process.env.PUBLIC_BASE_URL}/api/tts?id=${ttsId}`;
-    console.log("TTS URL (public):", ttsUrl);
+    // 4) Generate TTS and upload to S3
+    const { url: ttsUrl } = await textToSpeechSaveFile(aiReply);
+    console.log("TTS URL (S3):", ttsUrl);
 
-    // 5) Save to DB (non-blocking)
+    // 5) Save transcript + reply in DB (safe fallback if Neon down)
     try {
       await prisma.call.upsert({
         where: { plivoCallUUID: callUUID ?? "" },
@@ -57,10 +56,10 @@ export async function POST(req: Request) {
         },
       });
     } catch (err) {
-      console.error("DB write failed, continuing:", err);
+      console.error("DB write failed, continuing anyway:", err);
     }
 
-    // 6) Respond with <Play> + loop
+    // 6) Respond to Plivo with <Play> direct S3 URL
     const xml = `
       <Response>
         <Play>${ttsUrl}</Play>
