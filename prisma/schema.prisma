@@ -1,0 +1,29 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Patient {
+  id    String  @id @default(uuid())
+  name  String?
+  phone String?
+  calls Call[]
+}
+
+model Call {
+  id            String   @id @default(uuid())
+  plivoCallUUID String?  @unique
+  from          String?
+  to            String?
+  status        String   @default("initiated")
+  transcript    String?
+  aiReply       String?
+  recordingUrl  String?
+  createdAt     DateTime @default(now())
+
+  Patient Patient[]
+}
