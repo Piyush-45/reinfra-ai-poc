@@ -15,7 +15,7 @@ export async function textToSpeechSaveFile(text: string) {
   const id = uuidv4();
   const fileKey = `tts/${id}.mp3`;
 
-  // Call ElevenLabs
+  // Call ElevenLabs TTS API
   const res = await fetch(
     `https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID}`,
     {
@@ -37,18 +37,17 @@ export async function textToSpeechSaveFile(text: string) {
 
   const buffer = Buffer.from(await res.arrayBuffer());
 
-  // Upload to S3
+  // Upload MP3 to S3 (no ACL here, bucket policy will handle access)
   await s3.send(
     new PutObjectCommand({
       Bucket: process.env.AWS_S3_BUCKET!,
       Key: fileKey,
       Body: buffer,
       ContentType: "audio/mpeg",
-      ACL: "public-read",
     })
   );
 
-  // Public S3 URL
+  // Public S3 URL (your bucket must allow public read for /tts/*)
   const url = `https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${fileKey}`;
 
   return { id, url };
