@@ -1,57 +1,77 @@
 // @ts-nocheck
-import textToSpeech from "@google-cloud/text-to-speech";
-import { v4 as uuidv4 } from "uuid";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import axios from "axios";
+import { transcribeWithOpenAI, chatReply } from "@/lib/openai";
+import prisma from "@/lib/prisma";
+import { textToSpeechSaveFile } from "@/lib/googleTTS";
 
-let client: any;
-
-if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
-  // Vercel case: env contains JSON string
+export async function POST(req: Request) {
   try {
-    const credentials = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
-    client = new textToSpeech.TextToSpeechClient({ credentials });
-  } catch (e) {
-    console.error("Failed to parse GOOGLE_APPLICATION_CREDENTIALS_JSON", e);
-    throw e;
+    const bodyText = await req.text();
+    console.log("Plivo raw body:", bodyText);
+
+    const params = new URLSearchParams(bodyText);
+    const recordingUrl = params.get("RecordUrl");
+    const callUUID = params.get("CallUUID");
+
+    console.log("Parsed recordingUrl:", recordingUrl);
+    console.log("Parsed callUUID:", callUUID);
+
+    if (!recordingUrl) {
+      const fallback = `<Response>
+        <Speak>No recording received, please try again.</Speak>
+        <Record action="${process.env.PUBLIC_BASE_URL}/api/plivo/turn" method="POST" maxLength="20" finishOnKey="#" redirect="false"/>
+      </Response>`;
+      return new Response(fallback, { headers: { "Content-Type": "application/xml" } });
+    }
+
+    // 1) Download recording
+    const r = await axios.get(recordingUrl, { responseType: "arraybuffer" });
+    const buffer = Buffer.from(r.data);
+    console.log("Downloaded recording size:", buffer.length);
+
+    // 2) Transcribe
+    const transcript = await transcribeWithOpenAI(buffer);
+    console.log("Transcript:", transcript);
+
+    // 3) AI reply
+    const prompt = `You are an assistant on a phone call. Reply courteously and succinctly. Transcript: ${transcript}`;
+    const aiReply = await chatReply(prompt);
+    console.log("AI Reply:", aiReply);
+
+    // 4) Generate TTS with Google + upload to S3
+    const { url: ttsUrl } = await textToSpeechSaveFile(aiReply);
+    console.log("TTS URL (S3):", ttsUrl);
+
+    // 5) Save to DB (non-blocking)
+    try {
+      await prisma.call.upsert({
+        where: { plivoCallUUID: callUUID ?? "" },
+        update: { transcript, aiReply, recordingUrl },
+        create: {
+          plivoCallUUID: callUUID ?? undefined,
+          transcript,
+          aiReply,
+          recordingUrl,
+          status: "in-progress",
+        },
+      });
+    } catch (err) {
+      console.error("DB write failed, continuing anyway:", err);
+    }
+
+    // 6) Return XML with Play + loop back to record
+    const xml = `
+      <Response>
+        <Play>${ttsUrl}</Play>
+        <Record action="${process.env.PUBLIC_BASE_URL}/api/plivo/turn" method="POST" maxLength="20" finishOnKey="#" redirect="false"/>
+      </Response>`.trim();
+
+    console.log("Responding with XML:", xml);
+
+    return new Response(xml, { headers: { "Content-Type": "application/xml" } });
+  } catch (err: any) {
+    console.error("Error in /api/plivo/turn with TTS:", err);
+    const errXml = `<Response><Speak>Sorry, an error occurred.</Speak></Response>`;
+    return new Response(errXml, { headers: { "Content-Type": "application/xml" } });
   }
-} else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-  // Local dev case: path to JSON file
-  client = new textToSpeech.TextToSpeechClient({
-    keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS,
-  });
-} else {
-  throw new Error("Google TTS credentials not configured (set GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_APPLICATION_CREDENTIALS_JSON)");
-}
-
-const s3 = new S3Client({
-  region: process.env.AWS_REGION!,
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
-  },
-});
-
-export async function textToSpeechSaveFile(text: string) {
-  const id = uuidv4();
-  const fileKey = `tts/${id}.mp3`;
-
-  const [response] = await client.synthesizeSpeech({
-    input: { text },
-    voice: { languageCode: "en-US", ssmlGender: "FEMALE" },
-    audioConfig: { audioEncoding: "MP3", sampleRateHertz: 16000 }, // ✅ telephony safe
-  });
-
-  const buffer = Buffer.from(response.audioContent as Uint8Array);
-
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: process.env.AWS_S3_BUCKET!,
-      Key: fileKey,
-      Body: buffer,
-      ContentType: "audio/mpeg",
-    })
-  );
-
-  const url = `https://${process.env.AWS_S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${fileKey}`;
-  return { id, url };
 }
